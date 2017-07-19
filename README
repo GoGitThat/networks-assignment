@@ -1,0 +1,149 @@
+- Every time we open up a packet to determine what is inside, we first do a sanity check to ensure that the legnth of the entire packet matches what we expect.
+
+sr_router.c
+	- sr_handlepacket
+		- This method is used to determine exactly what type of action need to be taken on the packet.
+		- Depending on what the packer is/contains, we do one of the following:
+			- Send an ICMP echo message.
+			- Send an ICMP port unreachable message.
+			- Send an ICMP time exceeded message.
+			- Send an ICMP net unreachable message.
+			- Send an ICMP host unreachable message.
+			- Cache or send
+			- Ignore the packet
+		- For the 'unreachable' ICMP messages, there is a method that handles the creation of the ICMP and IP reply packets.
+		- For ICMP echo messages, there is a method that handles the creation of the ICMP and IP reply packets.
+		- For ICMP time exceeded messages, there is a method that handles the creation of the ICMP and IP reply packets.
+		- For any packet that needs to be sent, first it must be checked if we know the outgoing MAC address.
+			- To handle this requirement we created a method cache_or_send which takes in an IP packet and if we know the next-hop mac address, it will encapsulate the IP packet in an Ethernet packet and send it. However if we don't know the next-hop MAC address, this method will deal with adding the IP packet to our cache.
+	- icmp_unreachable
+		- This method is called whenever one of the following ICMP messages needs to be sent:
+			- ICMP port unreachable
+				- In response to an IP packet destinated for one of our router's interfaces containing a TCP/UDP payload.
+			- ICMP destination net unreachable
+				- In response to a non-existent route to the destination IP.
+			- ICMP destination host unreachable.
+				- In response to five ARP requests being sent out with no response.
+		- This method properly builds the correct reply ICMP unreachable packet, encapsulates it inside of an IP packet, and then calls cache_or_send.
+	- icmp_time_exceeded
+		- In response to the TTL field of an IP packet reaching 0.
+		- This method is called whenever an ICMP time exceeded message needs to be sent.
+		- This method properly builds a reply ICMP time exceeded packet, encapsulates it inside of an IP packet, and then called cache_or_send.
+	- imcp_echo
+		- In response to a ping to one of our routers interfaces.
+		- This method is called whenever an ICMP echo message needs to be sent.
+		- This method properly builds a reply ICMP echo packet, encapsulates it inside of an IP packet, and then called cache_or_send.
+	- longest_prefix_match
+		- This method performed longest prefix match on a supplied IP against each IP in the routing table.
+	- cache_or_send
+		- This method checks the ARP Cache for the suppied IP->MAC mapping.
+			- If a mapping exists:
+				- Creates an Ethernet hedaer with the MAC Address found in the cache, encapsulates the IP packet inside of an Ethernet packet, and then sends the packet.
+			- If a mapping doesn't exist:
+				- Caches the IP packet in the ARP cache waiting on ARP replies.
+	- new_arp_reply
+		- This method builds an ARP reply, encapsulates it inside of an Ethernet packet, and sends it.
+
+sr_arpcache.c
+	- handle_arpreq
+		- This method searches through each packet waiting on one specific ARP request.
+			- If an entry has been sent 5 or more times:
+				- An ICMP destination host unreachable message is sent back to the original sender.
+			- If an entry has no tbeen sent 5 or more times:
+				- Re-send the ARP request.
+	- new_arp_request
+		- This method builds an ARP request, encapsulates it inside of an Ethernet packet, and sends it to the router broadcast address.
+	- sr_arpcache_sweepreqs
+		- This method calls handle_arpreq for each specific ARP entry entry in the ARP request cache.
+
+sr_if.c
+	- has_matching_interface
+		- This method seaches through the router's interfaces looking at each one for a matching IP address (supplied through a parameter
+
+Design decisions:
+
+	Ambiguities:
+		- What to do when a packet's length doesn't match the expected length. We just returned.
+		- What to do when a packets checksum doens't match teh received checksum. We just returned.
+		- What to do when there is a memory allocaiton error. eixt program? send any message? We exited.
+
+
+PA-2 logic:
+-in sr_main, I essentially check if certain flags are set when the program is run (according to the assignment specifications)
+and then set those values to the timeout values for the nat and if the nat flag is set when the program is run
+I make sure to init the nat and set the respective timeout values provided and a nat pointer to the sr and vice versa
+
+-in sr_router.c, nothing has changed, I just check if sr->natset is 1, if so nat is being used and so I call on
+my nat packet handler otherwise all PA1 functionality is kept the same and is used(since nat wasn't set).
+
+-in sr_nat.c, I have multiple functions that help me execute parts of the nat functionality and so I will
+describe each one briefly (note only the main function is declare in sr_nat.h since the rest are helper functions)
+
+		-sr_nat_init,init the list of unsolicited syn packets of the nat to null, init the starting ports for the nat's
+		connections and set the correct ID
+
+		-sr_nat_destroy, iterate through the mappings and subsequent connections and free them all and free all the
+		unsolicited syn packets
+
+		-unsolicited_timeout_handler,this function is called on a nat pointer to update/check if an unsolicited syn
+		packet has outlived the timeout time of 6s represented by a declared variable in sr_nat.h called UNSOLICITED_TIMEOUT
+		and so it essentially just iterates through the unsolicied syn packets list of a nat and checks the last
+		updated variable to see if its larger then unsolicited timeout and if so it loses the pointer to the packet,
+		thus "dropping it silently"
+
+		-connection_timeout_handler,this function is called on a nat variable and a mapping variable. All this function
+		does is it iterates through a passed in mapping's connections and checks if a connection is established or not
+		and whether that connection is past a certain timeout value(that could be default or set during runtime) according
+		to the status of the connection and if it is past that value, it drops the connection by losing the pointer to it
+		in the mappings connections list
+
+		-sr_nat_timeout, this function is periodically called on a nat, and it loops through the nat's mappings to determine
+		if the nat should be deleted, it does this by having a flag that is set during the looping if certain conditions are met
+		and then checks if the flag was set, if so, lose pointer to the mapping, aka delete the mapping from nat
+
+		-tcp_cksum, essentially the tcp version of the original checksum, where it takes in an ip header, a tcp header
+		and a len, it then copies the essential information into a pseudo tcp header(a header that only contains the important set flags and data)
+		and calls the already given checksum function on the pseudo header and returns the result
+
+		-unsolicited_syn_remove,helper function that iterates through the list of syn packets, and checks the dest port of
+		the tcp header, if the port matches the port passed in, it deletes the packet
+
+		-connection_update,loops through the connections of mapping to see if it matches the passed in connection, if so
+		it will check the connections attributes and compare them to the attributes of the connections current status, if so
+		it will then update the connections attributes and it will also check the connection's status and update it accordingly
+
+		-sr_nat_lookup_external, this function is called to search for a mapping associated with a given external port and if
+		it exists return the copy of mapping
+
+		-sr_nat_lookup_internal, this function is called to search for a given internal pair of ip,port mapping and if it
+		exists return a copy of it, otherwise create a connection in the mappings connection list and set the appropriate
+		values according to the connection passed in, and then copy in the connections list of the mapping into the copy
+		mapping that will be returned and return the copy of the mapping
+
+		-sr_nat_insert_mapping, insert a mapping into the nats mapping list, if the ip and port and type of the mapping
+		match, copy it into the copy mapping and return it otherwise create a new mapping and set the appropritate
+		variables as the mapping passed in and also create a list of connection for the mapping and create a new connection
+		matching that of the connection passed in, add it to the new mapping's connection list and return the new mapping
+
+		-determine_direction, this function just checks whether the packet is coming into the nat or leaving it
+
+		-nat_icmp,this function is called when a packet is received,nat is enabled and the protocol of the packet is icmp,
+		this function essentially determines direction of the packet, and sets the variables of the packet such as the ip source
+		and ip dest correctly (which emulates a nat's job)
+
+		-nat_tcp, this function is called when a packet is received,nat is enabled and the protocol of the packet is tcp,
+		it first determines whether the packet is coming in or going out and handles the packet accordingly. This involves
+		as nat_icmp, searching for an entry in the routing table followed up by tcp handling procedure. This tcp handling
+		procedure is summed up by seraching for a connection that matches the variables set up by the ip header and handling
+		accordingly(check ports, check connection status,check on waiting syn packets etc)
+
+		-nat_packet_handler, this is the main function, it determines whether a packet is icmp or anything else(aka tcp)
+		and calls the correct functions on that packet (nat_tcp or nat_icmp), this function is the only one declared in sr_nat.h
+
+-sr_nat.h
+
+		-contains all the structures (tcp header,pseudo tcp haeder,connections,mapping,nat) needed for the nat functionality
+		and it also contains different enums that are a part of those structures and it also contains flag bits that would be set
+		in a connection's status parameter, essentially making it easier for me to compare and check the status of a connection
+
+That is it for PA2.
